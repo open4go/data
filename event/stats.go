@@ -1,12 +1,14 @@
-// stats/stats.go
 package event
 
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/open4go/data/db"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/redis/go-redis/v9"
 	"go.mongodb.org/mongo-driver/mongo"
 )
@@ -24,14 +26,47 @@ type Event struct {
 	EventType string                 `json:"event_type"`
 	Timestamp time.Time              `json:"timestamp"`
 	Data      map[string]interface{} `json:"data"`
+	// 新增：支持多商户
+	TenantID string `json:"tenant_id"`
 }
 
 var (
 	rdb     *redis.Client
 	mongoDB *mongo.Collection
+
+	// ==================== Prometheus 指标（带 tenant 标签）================
+	regTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dashboard_registrations_total",
+		Help: "Total number of user registrations by source",
+	}, []string{"tenant_id", "source"})
+
+	orderTotalAmount = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "dashboard_order_total_amount",
+		Help: "Total order amount today",
+	}, []string{"tenant_id"})
+
+	orderTotalCount = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "dashboard_order_total_count",
+		Help: "Total order count today",
+	}, []string{"tenant_id"})
+
+	orderByStore = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "dashboard_order_amount_by_store",
+		Help: "Order amount by store",
+	}, []string{"tenant_id", "store_id"})
+
+	refundTotalAmount = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "dashboard_refund_total_amount",
+		Help: "Total refund amount today",
+	}, []string{"tenant_id"})
+
+	refundRate = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "dashboard_refund_rate_percent",
+		Help: "Refund rate in percent",
+	}, []string{"tenant_id"})
 )
 
-// Init 初始化 Redis 和 MongoDB 客户端（在 main.go 中调用一次）
+// Init 初始化（在 main.go 中调用一次）
 func Init(redisClient *redis.Client, mongoColl *mongo.Collection) {
 	rdb = redisClient
 	mongoDB = mongoColl
@@ -42,8 +77,13 @@ func Init(redisClient *redis.Client, mongoColl *mongo.Collection) {
 // ====================================
 
 func ProcessEvent(e Event) {
+	if e.TenantID == "" {
+		e.TenantID = "default" // 防止空 tenant
+	}
+
 	ctx := context.Background()
 	date := e.Timestamp.Format("20060102")
+	ns := e.TenantID + ":" // namespace 前缀
 
 	rds := db.GetRedisDataHandler(ctx)
 	pipe := rds.Pipeline()
@@ -53,41 +93,47 @@ func ProcessEvent(e Event) {
 		source := fmt.Sprintf("%v", e.Data["source"])
 		userID := fmt.Sprintf("%v", e.Data["user_id"])
 
-		pipe.HIncrBy(ctx, "reg:source:"+date+":"+source, "count", 1)
-		pipe.PFAdd(ctx, "reg:unique:hll:"+date, userID)
-		pipe.ZIncrBy(ctx, "reg:source:rank:"+date, 1, source)
+		pipe.HIncrBy(ctx, ns+"reg:source:"+date+":"+source, "count", 1)
+		pipe.PFAdd(ctx, ns+"reg:unique:hll:"+date, userID)
+		pipe.ZIncrBy(ctx, ns+"reg:source:rank:"+date, 1, source)
 
 	case EventOrder:
 		storeID := fmt.Sprintf("%v", e.Data["store_id"])
 		amount := getFloat(e.Data, "amount")
 
-		storeKey := "order:store:" + storeID + ":" + date
+		storeKey := ns + "order:store:" + storeID + ":" + date
 		pipe.HIncrBy(ctx, storeKey, "count", 1)
 		pipe.HIncrByFloat(ctx, storeKey, "amount", amount)
-		pipe.ZIncrBy(ctx, "order:amount:rank:"+date, amount, storeID)
+		pipe.ZIncrBy(ctx, ns+"order:amount:rank:"+date, amount, storeID)
 
-		pipe.IncrByFloat(ctx, "order:total:amount:"+date, amount)
-		pipe.Incr(ctx, "order:total:count:"+date)
+		pipe.IncrByFloat(ctx, ns+"order:total:amount:"+date, amount)
+		pipe.Incr(ctx, ns+"order:total:count:"+date)
 
 	case EventRefund:
 		storeID := fmt.Sprintf("%v", e.Data["store_id"])
 		amount := getFloat(e.Data, "amount")
 
-		refundKey := "refund:store:" + storeID + ":" + date
+		refundKey := ns + "refund:store:" + storeID + ":" + date
 		pipe.HIncrBy(ctx, refundKey, "count", 1)
 		pipe.HIncrByFloat(ctx, refundKey, "amount", amount)
 
-		pipe.IncrByFloat(ctx, "refund:total:amount:"+date, amount)
-		pipe.Incr(ctx, "refund:total:count:"+date)
+		// 维护退单排行
+		pipe.ZIncrBy(ctx, ns+"refund:store:rank:"+date, amount, storeID)
+
+		pipe.IncrByFloat(ctx, ns+"refund:total:amount:"+date, amount)
+		pipe.Incr(ctx, ns+"refund:total:count:"+date)
 
 	case EventPayment, EventRecharge:
-		// 后续扩展
+		// 后续扩展时同样加上 ns 前缀
 	}
 
 	_, _ = pipe.Exec(ctx)
 
-	// 持久化到 MongoDB Time Series
+	// 持久化到 MongoDB（建议也加上 tenant_id）
 	mongoDB.InsertOne(ctx, e)
+
+	// 更新 Prometheus 指标（带 tenant_id 标签）
+	updatePrometheusMetrics(e)
 }
 
 func getFloat(data map[string]interface{}, key string) float64 {
@@ -98,104 +144,118 @@ func getFloat(data map[string]interface{}, key string) float64 {
 }
 
 // ====================================
-//          数据统计结果获取函数
+//          Prometheus 指标更新
 // ====================================
 
-// GetDashboardMetrics 获取今日仪表盘核心指标（供前端 /init 接口使用）
-//
-// JSON Sample:
-//
-//	{
-//	  "regSources": [
-//	    {"Member": "wechat", "Score": 42},
-//	    {"Member": "app", "Score": 28}
-//	  ],
-//	  "orderByStore": [
-//	    {"Member": "STORE001", "Score": 12500.5},
-//	    {"Member": "STORE002", "Score": 8900}
-//	  ],
-//	  "totalOrderAmount": "21400.5",
-//	  "totalOrderCount": "156",
-//	  "totalRefundAmount": "1200",
-//	  "totalRefundCount": "8",
-//	  "refundRate": 5.61,
-//	  "uniqueUsers": 65
-//	}
-func GetDashboardMetrics() map[string]interface{} {
+func updatePrometheusMetrics(e Event) {
+	if e.TenantID == "" {
+		e.TenantID = "default"
+	}
+	date := e.Timestamp.Format("20060102")
+	ctx := context.Background()
+	ns := e.TenantID + ":"
+
+	switch e.EventType {
+	case EventRegistration:
+		source := fmt.Sprintf("%v", e.Data["source"])
+		regTotal.WithLabelValues(e.TenantID, source).Inc()
+
+	case EventOrder:
+		storeID := fmt.Sprintf("%v", e.Data["store_id"])
+		amount := getFloat(e.Data, "amount")
+
+		// 更新总金额和总数
+		if totalAmtStr, err := rdb.Get(ctx, ns+"order:total:amount:"+date).Result(); err == nil {
+			if amt, err := strconv.ParseFloat(totalAmtStr, 64); err == nil {
+				orderTotalAmount.WithLabelValues(e.TenantID).Set(amt)
+			}
+		}
+		if totalCntStr, err := rdb.Get(ctx, ns+"order:total:count:"+date).Result(); err == nil {
+			if cnt, err := strconv.ParseFloat(totalCntStr, 64); err == nil {
+				orderTotalCount.WithLabelValues(e.TenantID).Set(cnt)
+			}
+		}
+
+		orderByStore.WithLabelValues(e.TenantID, storeID).Add(amount)
+
+	case EventRefund:
+		if refundAmtStr, err := rdb.Get(ctx, ns+"refund:total:amount:"+date).Result(); err == nil {
+			if amt, err := strconv.ParseFloat(refundAmtStr, 64); err == nil {
+				refundTotalAmount.WithLabelValues(e.TenantID).Set(amt)
+			}
+		}
+		rate := GetRefundRateWithTenant(e.TenantID)
+		refundRate.WithLabelValues(e.TenantID).Set(rate)
+	}
+}
+
+// ====================================
+//          数据统计结果获取函数（全部支持 tenant）
+// ====================================
+
+// GetDashboardMetrics 获取今日仪表盘核心指标（需传入 tenantID）
+func GetDashboardMetrics(tenantID string) map[string]interface{} {
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	date := time.Now().Format("20060102")
-	return GetMetricsByDate(date)
+	return GetMetricsByDate(tenantID, date)
 }
 
 // GetMetricsByDate 获取指定日期的统计指标
-//
-// JSON Sample: 同 GetDashboardMetrics（只是日期可自定义）
-func GetMetricsByDate(date string) map[string]interface{} {
+func GetMetricsByDate(tenantID, date string) map[string]interface{} {
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	ctx := context.Background()
+	ns := tenantID + ":"
 	m := make(map[string]interface{})
 
-	// 1. 注册来源 Top 10
-	sources, _ := rdb.ZRevRangeWithScores(ctx, "reg:source:rank:"+date, 0, 9).Result()
+	sources, _ := rdb.ZRevRangeWithScores(ctx, ns+"reg:source:rank:"+date, 0, 9).Result()
 	m["regSources"] = sources
 
-	// 2. 门店下单金额排行
-	stores, _ := rdb.ZRevRangeWithScores(ctx, "order:amount:rank:"+date, 0, 9).Result()
+	stores, _ := rdb.ZRevRangeWithScores(ctx, ns+"order:amount:rank:"+date, 0, 9).Result()
 	m["orderByStore"] = stores
 
-	// 3. 总订单金额和数量
-	totalAmount, _ := rdb.Get(ctx, "order:total:amount:"+date).Result()
-	totalCount, _ := rdb.Get(ctx, "order:total:count:"+date).Result()
+	totalAmount, _ := rdb.Get(ctx, ns+"order:total:amount:"+date).Result()
+	totalCount, _ := rdb.Get(ctx, ns+"order:total:count:"+date).Result()
 	m["totalOrderAmount"] = totalAmount
 	m["totalOrderCount"] = totalCount
 
-	// 4. 退单统计
-	refundAmount, _ := rdb.Get(ctx, "refund:total:amount:"+date).Result()
-	refundCount, _ := rdb.Get(ctx, "refund:total:count:"+date).Result()
+	refundAmount, _ := rdb.Get(ctx, ns+"refund:total:amount:"+date).Result()
+	refundCount, _ := rdb.Get(ctx, ns+"refund:total:count:"+date).Result()
 	m["totalRefundAmount"] = refundAmount
 	m["totalRefundCount"] = refundCount
 
-	// 5. 退单率
 	if totalAmount != "" && refundAmount != "" {
-		refundRate := calculateRefundRate(totalAmount, refundAmount)
-		m["refundRate"] = refundRate
+		m["refundRate"] = calculateRefundRate(totalAmount, refundAmount)
 	}
 
-	// 6. 注册唯一用户数（HyperLogLog）
-	uniqueUsers, _ := rdb.PFCount(ctx, "reg:unique:hll:"+date).Result()
+	uniqueUsers, _ := rdb.PFCount(ctx, ns+"reg:unique:hll:"+date).Result()
 	m["uniqueUsers"] = uniqueUsers
 
 	return m
 }
 
-// GetRegistrationSources 获取注册来源详细数据（支持所有来源）
-//
-// JSON Sample:
-// [
-//
-//	{"Member": "wechat", "Score": 142},
-//	{"Member": "app", "Score": 89},
-//	{"Member": "miniapp", "Score": 37}
-//
-// ]
-func GetRegistrationSources(date string) []redis.Z {
+// GetRegistrationSources 支持 tenant
+func GetRegistrationSources(tenantID, date string) []redis.Z {
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	if date == "" {
 		date = time.Now().Format("20060102")
 	}
 	ctx := context.Background()
-	result, _ := rdb.ZRevRangeWithScores(ctx, "reg:source:rank:"+date, 0, -1).Result()
+	ns := tenantID + ":"
+	result, _ := rdb.ZRevRangeWithScores(ctx, ns+"reg:source:rank:"+date, 0, -1).Result()
 	return result
 }
 
-// GetOrderByStore 获取门店下单金额排行（支持指定 Top N）
-//
-// JSON Sample:
-// [
-//
-//	{"Member": "STORE001", "Score": 12500.5},
-//	{"Member": "STORE005", "Score": 9800},
-//	{"Member": "STORE003", "Score": 4500}
-//
-// ]
-func GetOrderByStore(date string, topN int64) []redis.Z {
+// GetOrderByStore 支持 tenant
+func GetOrderByStore(tenantID, date string, topN int64) []redis.Z {
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	if date == "" {
 		date = time.Now().Format("20060102")
 	}
@@ -203,68 +263,190 @@ func GetOrderByStore(date string, topN int64) []redis.Z {
 		topN = 10
 	}
 	ctx := context.Background()
-	result, _ := rdb.ZRevRangeWithScores(ctx, "order:amount:rank:"+date, 0, topN-1).Result()
+	ns := tenantID + ":"
+	result, _ := rdb.ZRevRangeWithScores(ctx, ns+"order:amount:rank:"+date, 0, topN-1).Result()
 	return result
 }
 
-// GetRefundRate 获取今日退单率（百分比）
-//
-// JSON Sample: 直接返回数字，例如 5.61
-func GetRefundRate() float64 {
+// GetRefundRateWithTenant 支持多租户的退单率
+func GetRefundRateWithTenant(tenantID string) float64 {
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	date := time.Now().Format("20060102")
 	ctx := context.Background()
+	ns := tenantID + ":"
 
-	totalAmountStr, _ := rdb.Get(ctx, "order:total:amount:"+date).Result()
-	refundAmountStr, _ := rdb.Get(ctx, "refund:total:amount:"+date).Result()
+	totalAmountStr, _ := rdb.Get(ctx, ns+"order:total:amount:"+date).Result()
+	refundAmountStr, _ := rdb.Get(ctx, ns+"refund:total:amount:"+date).Result()
 
 	return calculateRefundRate(totalAmountStr, refundAmountStr)
 }
 
-// calculateRefundRate 内部计算退单率
+// GetRefundByStore 支持 tenant
+func GetRefundByStore(tenantID, date string, topN int64) []redis.Z {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	if date == "" {
+		date = time.Now().Format("20060102")
+	}
+	if topN <= 0 {
+		topN = 10
+	}
+	ctx := context.Background()
+	ns := tenantID + ":"
+	result, _ := rdb.ZRevRangeWithScores(ctx, ns+"refund:store:rank:"+date, 0, topN-1).Result()
+	return result
+}
+
 func calculateRefundRate(totalAmountStr, refundAmountStr string) float64 {
 	var total, refund float64
 	fmt.Sscanf(totalAmountStr, "%f", &total)
 	fmt.Sscanf(refundAmountStr, "%f", &refund)
-
 	if total == 0 {
 		return 0
 	}
 	return (refund / total) * 100
 }
 
-// GetHourlyTrend 获取今日每小时订单金额趋势（当前简化版）
-// 后续可改为 RedisTimeSeries 或按小时 Hash 实现
+// ====================================
+//          趋势数据获取函数（最近 N 天）
+// ====================================
+
+// GetTrendMetrics 获取最近 N 天的关键指标趋势（推荐用于前端趋势图）
 //
-// JSON Sample:
+// 返回格式示例（JSON Sample）:
 //
 //	{
-//	  "08": 1240.5,
-//	  "09": 2350,
-//	  "10": 1890.75,
-//	  ...
+//	  "dates": ["20260407", "20260408", ..., "20260413"],
+//	  "orderAmount": [12400.5, 15890.0, 21340.5, ..., 18900],
+//	  "orderCount":   [89, 112, 156, ..., 134],
+//	  "refundRate":   [3.2, 4.1, 5.61, ..., 2.8],
+//	  "uniqueUsers":  [45, 62, 65, ..., 58],
+//	  "regCount":     [23, 31, 28, ..., 35]
 //	}
-func GetHourlyTrend() map[string]float64 {
-	// 当前返回空 map，待你需要完整实现时再补充
-	return make(map[string]float64)
+func GetTrendMetrics(tenantID string, days int) map[string]interface{} {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	if days <= 0 || days > 90 {
+		days = 7 // 默认最近7天
+	}
+
+	ctx := context.Background()
+	ns := tenantID + ":"
+
+	result := make(map[string]interface{})
+	dates := make([]string, days)
+	orderAmount := make([]float64, days)
+	orderCount := make([]float64, days)
+	refundRateArr := make([]float64, days)
+	uniqueUsers := make([]float64, days)
+	regCount := make([]float64, days) // 可选：每日注册总数
+
+	now := time.Now()
+	for i := 0; i < days; i++ {
+		d := now.AddDate(0, 0, -i).Format("20060102")
+		dates[days-1-i] = d // 从旧到新排序，方便前端画图
+
+		// 1. 订单总金额
+		amtStr, _ := rdb.Get(ctx, ns+"order:total:amount:"+d).Result()
+		amt, _ := strconv.ParseFloat(amtStr, 64)
+		orderAmount[days-1-i] = amt
+
+		// 2. 订单总数
+		cntStr, _ := rdb.Get(ctx, ns+"order:total:count:"+d).Result()
+		cnt, _ := strconv.ParseFloat(cntStr, 64)
+		orderCount[days-1-i] = cnt
+
+		// 3. 退单率
+		refundAmtStr, _ := rdb.Get(ctx, ns+"refund:total:amount:"+d).Result()
+		refundRateArr[days-1-i] = calculateRefundRate(amtStr, refundAmtStr)
+
+		// 4. 唯一用户数
+		u, _ := rdb.PFCount(ctx, ns+"reg:unique:hll:"+d).Result()
+		uniqueUsers[days-1-i] = float64(u)
+
+		// 5. 注册总数（从任意来源求和，或维护单独 counter）
+		regTotal, _ := rdb.Get(ctx, ns+"reg:total:count:"+d).Result() // 需要在 ProcessEvent 中维护
+		reg, _ := strconv.ParseFloat(regTotal, 64)
+		regCount[days-1-i] = reg
+	}
+
+	result["dates"] = dates
+	result["orderAmount"] = orderAmount
+	result["orderCount"] = orderCount
+	result["refundRate"] = refundRateArr
+	result["uniqueUsers"] = uniqueUsers
+	result["regCount"] = regCount
+
+	return result
 }
 
-// GetRefundByStore 获取各门店退单统计（类似门店订单）
+// GetWeeklySummary 获取本周 vs 上周的汇总对比（周环比）
+// 返回示例：
 //
-// JSON Sample:
-// [
-//
-//	{"Member": "STORE001", "Score": 450.0},   // Score 为退单金额
-//	{"Member": "STORE002", "Score": 299}
-//
-// ]
-func GetRefundByStore(date string, topN int64) []redis.Z {
-	if date == "" {
-		date = time.Now().Format("20060102")
+//	{
+//	  "thisWeekOrderAmount": 124500.75,
+//	  "lastWeekOrderAmount": 98000.5,
+//	  "weekOverWeekPercent": 27.04,     // 正数表示增长，负数表示下降
+//	  "thisWeekOrderCount": 892,
+//	  "lastWeekOrderCount": 745
+//	}
+func GetWeeklySummary(tenantID string) map[string]interface{} {
+	if tenantID == "" {
+		tenantID = "default"
 	}
-	if topN <= 0 {
-		topN = 10
-	}
+
 	ctx := context.Background()
-	result, _ := rdb.ZRevRangeWithScores(ctx, "refund:store:rank:"+date, 0, topN-1).Result() // 注意：需在 ProcessEvent 中维护该 Sorted Set
-	return result
+	ns := tenantID + ":"
+
+	now := time.Now()
+	thisWeekAmount := 0.0
+	thisWeekCount := 0.0
+	lastWeekAmount := 0.0
+	lastWeekCount := 0.0
+
+	// 计算本周（最近7天）和上周（前7天）
+	for i := 0; i < 7; i++ {
+		// 本周日期
+		thisDate := now.AddDate(0, 0, -i).Format("20060102")
+		// 上周日期（比本周再往前7天）
+		lastDate := now.AddDate(0, 0, -i-7).Format("20060102")
+
+		// 本周订单金额
+		amtStr, _ := rdb.Get(ctx, ns+"order:total:amount:"+thisDate).Result()
+		amt, _ := strconv.ParseFloat(amtStr, 64)
+		thisWeekAmount += amt
+
+		// 本周订单数量
+		cntStr, _ := rdb.Get(ctx, ns+"order:total:count:"+thisDate).Result()
+		cnt, _ := strconv.ParseFloat(cntStr, 64)
+		thisWeekCount += cnt
+
+		// 上周订单金额
+		lastAmtStr, _ := rdb.Get(ctx, ns+"order:total:amount:"+lastDate).Result()
+		lastAmt, _ := strconv.ParseFloat(lastAmtStr, 64)
+		lastWeekAmount += lastAmt
+
+		// 上周订单数量
+		lastCntStr, _ := rdb.Get(ctx, ns+"order:total:count:"+lastDate).Result()
+		lastCnt, _ := strconv.ParseFloat(lastCntStr, 64)
+		lastWeekCount += lastCnt
+	}
+
+	weekOverWeek := 0.0
+	if lastWeekAmount > 0 {
+		weekOverWeek = (thisWeekAmount - lastWeekAmount) / lastWeekAmount * 100
+	}
+
+	return map[string]interface{}{
+		"thisWeekOrderAmount": thisWeekAmount,
+		"thisWeekOrderCount":  thisWeekCount,
+		"lastWeekOrderAmount": lastWeekAmount,
+		"lastWeekOrderCount":  lastWeekCount,
+		"weekOverWeekPercent": weekOverWeek, // 周环比百分比
+		"weekOverWeekAmount":  thisWeekAmount - lastWeekAmount,
+	}
 }
