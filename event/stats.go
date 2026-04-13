@@ -10,7 +10,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/redis/go-redis/v9"
-	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // 事件类型常量
@@ -31,8 +30,8 @@ type Event struct {
 }
 
 var (
-	rdb     *redis.Client
-	mongoDB *mongo.Collection
+	rdb *redis.Client
+	//mongoDB *mongo.Collection
 
 	// ==================== Prometheus 指标（带 tenant 标签）================
 	regTotal = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -65,12 +64,6 @@ var (
 		Help: "Refund rate in percent",
 	}, []string{"tenant_id"})
 )
-
-// Init 初始化（在 main.go 中调用一次）
-func Init(redisClient *redis.Client, mongoColl *mongo.Collection) {
-	rdb = redisClient
-	mongoDB = mongoColl
-}
 
 // ====================================
 //          事件处理（统计核心）
@@ -130,7 +123,7 @@ func ProcessEvent(e Event) {
 	_, _ = pipe.Exec(ctx)
 
 	// 持久化到 MongoDB（建议也加上 tenant_id）
-	mongoDB.InsertOne(ctx, e)
+	//mongoDB.InsertOne(ctx, e)
 
 	// 更新 Prometheus 指标（带 tenant_id 标签）
 	updatePrometheusMetrics(e)
