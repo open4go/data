@@ -1,7 +1,9 @@
 package event
 
 import (
+	"context"
 	"fmt"
+	"github.com/open4go/log"
 	"time"
 )
 
@@ -10,20 +12,20 @@ import (
 // ====================================
 
 // SimulateEvent 生成模拟事件并立即调用 ProcessEvent
-func SimulateEvent(eventType string, tenantID string) {
+func SimulateEvent(ctx context.Context, eventType string, tenantID string) {
 	if tenantID == "" {
 		tenantID = "default"
 	}
 
-	event := GenerateEvent(eventType, tenantID)
-	ProcessEvent(event)
+	event := GenerateEvent(ctx, eventType, tenantID)
+	ProcessEvent(ctx, event)
 
 	fmt.Printf("✅ 已模拟生成事件: %s | Tenant: %s | 时间: %s\n",
 		eventType, tenantID, event.Timestamp.Format("2006-01-02 15:04:05"))
 }
 
 // GenerateEvent 生成模拟事件数据（新增商品信息）
-func GenerateEvent(eventType string, tenantID string) Event {
+func GenerateEvent(ctx context.Context, eventType string, tenantID string) Event {
 	if tenantID == "" {
 		tenantID = "default"
 	}
@@ -75,10 +77,13 @@ func GenerateEvent(eventType string, tenantID string) Event {
 				"quantity":     float64(qty),
 				"price":        p.Price,
 			}
+			log.Log(ctx).WithField("item", item).Debug("test data")
 			items = append(items, item)
+			log.Log(ctx).WithField("item", item).Debug("fake new item")
 			totalAmount += p.Price * float64(qty)
 		}
 
+		log.Log(ctx).WithField("items", items).Debug("fake new items")
 		return Event{
 			EventType: EventOrder,
 			TenantID:  tenantID,
@@ -132,12 +137,12 @@ func GenerateEvent(eventType string, tenantID string) Event {
 		}
 
 	default:
-		return GenerateEvent(EventRegistration, tenantID)
+		return GenerateEvent(ctx, EventRegistration, tenantID)
 	}
 }
 
 // SimulateBatch 批量模拟（保持不变）
-func SimulateBatch(count int, tenantID string) {
+func SimulateBatch(ctx context.Context, count int, tenantID string) {
 	if tenantID == "" {
 		tenantID = "default"
 	}
@@ -158,7 +163,7 @@ func SimulateBatch(count int, tenantID string) {
 			eventType = EventRecharge
 		}
 
-		SimulateEvent(eventType, tenantID)
+		SimulateEvent(ctx, eventType, tenantID)
 
 		if i%20 == 0 {
 			time.Sleep(10 * time.Millisecond)
@@ -169,7 +174,7 @@ func SimulateBatch(count int, tenantID string) {
 }
 
 // SimulateTodayData 快速生成今日测试数据（订单会包含丰富商品信息）
-func SimulateTodayData(tenantID string) {
+func SimulateTodayData(ctx context.Context, tenantID string) {
 	if tenantID == "" {
 		tenantID = "default"
 	}
@@ -178,22 +183,22 @@ func SimulateTodayData(tenantID string) {
 
 	// 注册事件
 	for i := 0; i < 45; i++ {
-		SimulateEvent(EventRegistration, tenantID)
+		SimulateEvent(ctx, EventRegistration, tenantID)
 	}
 
 	// 下单事件（重点！每个订单都会带商品信息）
 	for i := 0; i < 80; i++ { // 增加到80条，让商品数据更丰富
-		SimulateEvent(EventOrder, tenantID)
+		SimulateEvent(ctx, EventOrder, tenantID)
 	}
 
 	// 退单事件
 	for i := 0; i < 15; i++ {
-		SimulateEvent(EventRefund, tenantID)
+		SimulateEvent(ctx, EventRefund, tenantID)
 	}
 
 	// 充值事件
 	for i := 0; i < 15; i++ {
-		SimulateEvent(EventRecharge, tenantID)
+		SimulateEvent(ctx, EventRecharge, tenantID)
 	}
 
 	fmt.Println("✅ 今日测试数据生成完成！（订单已包含商品信息）")

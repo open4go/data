@@ -23,12 +23,12 @@ type Event struct {
 //
 // ====================================
 
-func ProcessEvent(e Event) {
+func ProcessEvent(ctx context.Context, e Event) {
+
+	log.Log(ctx).WithField("e", e).Debug("before process event")
 	if e.TenantID == "" {
 		e.TenantID = "default" // 防止空 tenant
 	}
-
-	ctx := context.Background()
 	date := e.Timestamp.Format("20060102")
 	ns := e.TenantID + ":" // namespace 前缀
 
