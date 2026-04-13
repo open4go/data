@@ -30,7 +30,7 @@ type Event struct {
 }
 
 var (
-	rdb *redis.Client
+	//rdb *redis.Client
 	//mongoDB *mongo.Collection
 
 	// ==================== Prometheus 指标（带 tenant 标签）================
@@ -126,7 +126,7 @@ func ProcessEvent(e Event) {
 	//mongoDB.InsertOne(ctx, e)
 
 	// 更新 Prometheus 指标（带 tenant_id 标签）
-	updatePrometheusMetrics(e)
+	updatePrometheusMetrics(ctx, e)
 }
 
 func getFloat(data map[string]interface{}, key string) float64 {
@@ -140,12 +140,12 @@ func getFloat(data map[string]interface{}, key string) float64 {
 //          Prometheus 指标更新
 // ====================================
 
-func updatePrometheusMetrics(e Event) {
+func updatePrometheusMetrics(ctx context.Context, e Event) {
+	rdb := db.GetRedisDataHandler(ctx)
 	if e.TenantID == "" {
 		e.TenantID = "default"
 	}
 	date := e.Timestamp.Format("20060102")
-	ctx := context.Background()
 	ns := e.TenantID + ":"
 
 	switch e.EventType {
@@ -177,7 +177,7 @@ func updatePrometheusMetrics(e Event) {
 				refundTotalAmount.WithLabelValues(e.TenantID).Set(amt)
 			}
 		}
-		rate := GetRefundRateWithTenant(e.TenantID)
+		rate := GetRefundRateWithTenant(ctx, e.TenantID)
 		refundRate.WithLabelValues(e.TenantID).Set(rate)
 	}
 }
@@ -187,20 +187,20 @@ func updatePrometheusMetrics(e Event) {
 // ====================================
 
 // GetDashboardMetrics 获取今日仪表盘核心指标（需传入 tenantID）
-func GetDashboardMetrics(tenantID string) map[string]interface{} {
+func GetDashboardMetrics(ctx context.Context, tenantID string) map[string]interface{} {
 	if tenantID == "" {
 		tenantID = "default"
 	}
 	date := time.Now().Format("20060102")
-	return GetMetricsByDate(tenantID, date)
+	return GetMetricsByDate(ctx, tenantID, date)
 }
 
 // GetMetricsByDate 获取指定日期的统计指标
-func GetMetricsByDate(tenantID, date string) map[string]interface{} {
+func GetMetricsByDate(ctx context.Context, tenantID, date string) map[string]interface{} {
+	rdb := db.GetRedisDataHandler(ctx)
 	if tenantID == "" {
 		tenantID = "default"
 	}
-	ctx := context.Background()
 	ns := tenantID + ":"
 	m := make(map[string]interface{})
 
@@ -231,21 +231,22 @@ func GetMetricsByDate(tenantID, date string) map[string]interface{} {
 }
 
 // GetRegistrationSources 支持 tenant
-func GetRegistrationSources(tenantID, date string) []redis.Z {
+func GetRegistrationSources(ctx context.Context, tenantID, date string) []redis.Z {
+	rdb := db.GetRedisDataHandler(ctx)
 	if tenantID == "" {
 		tenantID = "default"
 	}
 	if date == "" {
 		date = time.Now().Format("20060102")
 	}
-	ctx := context.Background()
 	ns := tenantID + ":"
 	result, _ := rdb.ZRevRangeWithScores(ctx, ns+"reg:source:rank:"+date, 0, -1).Result()
 	return result
 }
 
 // GetOrderByStore 支持 tenant
-func GetOrderByStore(tenantID, date string, topN int64) []redis.Z {
+func GetOrderByStore(ctx context.Context, tenantID, date string, topN int64) []redis.Z {
+	rdb := db.GetRedisDataHandler(ctx)
 	if tenantID == "" {
 		tenantID = "default"
 	}
@@ -255,19 +256,19 @@ func GetOrderByStore(tenantID, date string, topN int64) []redis.Z {
 	if topN <= 0 {
 		topN = 10
 	}
-	ctx := context.Background()
 	ns := tenantID + ":"
 	result, _ := rdb.ZRevRangeWithScores(ctx, ns+"order:amount:rank:"+date, 0, topN-1).Result()
 	return result
 }
 
 // GetRefundRateWithTenant 支持多租户的退单率
-func GetRefundRateWithTenant(tenantID string) float64 {
+func GetRefundRateWithTenant(ctx context.Context, tenantID string) float64 {
+	rdb := db.GetRedisDataHandler(ctx)
+
 	if tenantID == "" {
 		tenantID = "default"
 	}
 	date := time.Now().Format("20060102")
-	ctx := context.Background()
 	ns := tenantID + ":"
 
 	totalAmountStr, _ := rdb.Get(ctx, ns+"order:total:amount:"+date).Result()
@@ -277,7 +278,8 @@ func GetRefundRateWithTenant(tenantID string) float64 {
 }
 
 // GetRefundByStore 支持 tenant
-func GetRefundByStore(tenantID, date string, topN int64) []redis.Z {
+func GetRefundByStore(ctx context.Context, tenantID, date string, topN int64) []redis.Z {
+	rdb := db.GetRedisDataHandler(ctx)
 	if tenantID == "" {
 		tenantID = "default"
 	}
@@ -287,7 +289,6 @@ func GetRefundByStore(tenantID, date string, topN int64) []redis.Z {
 	if topN <= 0 {
 		topN = 10
 	}
-	ctx := context.Background()
 	ns := tenantID + ":"
 	result, _ := rdb.ZRevRangeWithScores(ctx, ns+"refund:store:rank:"+date, 0, topN-1).Result()
 	return result
@@ -319,15 +320,15 @@ func calculateRefundRate(totalAmountStr, refundAmountStr string) float64 {
 //	  "uniqueUsers":  [45, 62, 65, ..., 58],
 //	  "regCount":     [23, 31, 28, ..., 35]
 //	}
-func GetTrendMetrics(tenantID string, days int) map[string]interface{} {
+func GetTrendMetrics(ctx context.Context, tenantID string, days int) map[string]interface{} {
+	rdb := db.GetRedisDataHandler(ctx)
+
 	if tenantID == "" {
 		tenantID = "default"
 	}
 	if days <= 0 || days > 90 {
 		days = 7 // 默认最近7天
 	}
-
-	ctx := context.Background()
 	ns := tenantID + ":"
 
 	result := make(map[string]interface{})
@@ -387,12 +388,11 @@ func GetTrendMetrics(tenantID string, days int) map[string]interface{} {
 //	  "thisWeekOrderCount": 892,
 //	  "lastWeekOrderCount": 745
 //	}
-func GetWeeklySummary(tenantID string) map[string]interface{} {
+func GetWeeklySummary(ctx context.Context, tenantID string) map[string]interface{} {
+	rdb := db.GetRedisDataHandler(ctx)
 	if tenantID == "" {
 		tenantID = "default"
 	}
-
-	ctx := context.Background()
 	ns := tenantID + ":"
 
 	now := time.Now()
