@@ -6,19 +6,32 @@ import (
 )
 
 // ====================================
-//          数据模拟生成函数（用于测试）
+//          数据模拟生成函数（支持多租户）
 // ====================================
 
-// SimulateEvent 生成模拟事件并立即调用 ProcessEvent 写入 Redis + MongoDB
-// 参数：eventType 使用 stats 包中定义的常量
-func SimulateEvent(eventType string) {
-	event := GenerateEvent(eventType)
+// SimulateEvent 生成模拟事件并立即调用 ProcessEvent
+// 参数说明：
+//
+//	eventType: 事件类型（如 EventOrder）
+//	tenantID:  商户ID（必填，支持多租户）
+func SimulateEvent(eventType string, tenantID string) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
+	event := GenerateEvent(eventType, tenantID)
 	ProcessEvent(event)
-	fmt.Printf("✅ 已模拟生成事件: %s | 时间: %s\n", eventType, event.Timestamp.Format("2006-01-02 15:04:05"))
+
+	fmt.Printf("✅ 已模拟生成事件: %s | Tenant: %s | 时间: %s\n",
+		eventType, tenantID, event.Timestamp.Format("2006-01-02 15:04:05"))
 }
 
-// GenerateEvent 生成模拟事件数据（不立即处理，仅返回 Event）
-func GenerateEvent(eventType string) Event {
+// GenerateEvent 生成模拟事件数据（支持 tenantID）
+func GenerateEvent(eventType string, tenantID string) Event {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
 	now := time.Now().UTC()
 
 	switch eventType {
@@ -26,6 +39,7 @@ func GenerateEvent(eventType string) Event {
 		sources := []string{"wechat", "app", "miniapp", "web", "ios"}
 		return Event{
 			EventType: EventRegistration,
+			TenantID:  tenantID,
 			Timestamp: now,
 			Data: map[string]interface{}{
 				"user_id": fmt.Sprintf("user_%d", now.UnixNano()%100000),
@@ -38,6 +52,7 @@ func GenerateEvent(eventType string) Event {
 		amounts := []float64{99.9, 199.0, 299.5, 499.0, 1299.0, 89.9}
 		return Event{
 			EventType: EventOrder,
+			TenantID:  tenantID,
 			Timestamp: now,
 			Data: map[string]interface{}{
 				"order_id": fmt.Sprintf("ORD_%d", now.UnixNano()%1000000),
@@ -51,6 +66,7 @@ func GenerateEvent(eventType string) Event {
 		amounts := []float64{99.9, 199.0, 299.5, 499.0}
 		return Event{
 			EventType: EventRefund,
+			TenantID:  tenantID,
 			Timestamp: now,
 			Data: map[string]interface{}{
 				"order_id": fmt.Sprintf("ORD_%d", now.UnixNano()%1000000),
@@ -63,6 +79,7 @@ func GenerateEvent(eventType string) Event {
 	case EventPayment:
 		return Event{
 			EventType: EventPayment,
+			TenantID:  tenantID,
 			Timestamp: now,
 			Data: map[string]interface{}{
 				"order_id": fmt.Sprintf("ORD_%d", now.UnixNano()%1000000),
@@ -75,6 +92,7 @@ func GenerateEvent(eventType string) Event {
 		channels := []string{"wechat", "alipay", "bank"}
 		return Event{
 			EventType: EventRecharge,
+			TenantID:  tenantID,
 			Timestamp: now,
 			Data: map[string]interface{}{
 				"user_id": fmt.Sprintf("user_%d", now.UnixNano()%100000),
@@ -84,17 +102,19 @@ func GenerateEvent(eventType string) Event {
 		}
 
 	default:
-		// 默认返回一个注册事件
-		return GenerateEvent(EventRegistration)
+		return GenerateEvent(EventRegistration, tenantID)
 	}
 }
 
-// SimulateBatch 批量模拟生成指定数量的事件（适合压力测试）
-func SimulateBatch(count int) {
-	fmt.Printf("🚀 开始批量模拟 %d 个事件...\n", count)
+// SimulateBatch 批量模拟生成指定数量的事件（支持 tenantID）
+func SimulateBatch(count int, tenantID string) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
+	fmt.Printf("🚀 开始批量模拟 %d 个事件 | Tenant: %s...\n", count, tenantID)
 
 	for i := 0; i < count; i++ {
-		// 按一定比例随机生成不同类型事件
 		r := i % 10
 		var eventType string
 		switch {
@@ -108,9 +128,8 @@ func SimulateBatch(count int) {
 			eventType = EventRecharge
 		}
 
-		SimulateEvent(eventType)
+		SimulateEvent(eventType, tenantID)
 
-		// 适当延时，避免瞬间产生过多数据（可选）
 		if i%20 == 0 {
 			time.Sleep(10 * time.Millisecond)
 		}
@@ -119,28 +138,32 @@ func SimulateBatch(count int) {
 	fmt.Println("✅ 批量模拟完成！")
 }
 
-// SimulateTodayData 快速生成今天的基础测试数据（推荐首次启动时调用）
-func SimulateTodayData() {
-	fmt.Println("🎯 开始生成今日测试数据...")
+// SimulateTodayData 快速生成今日测试数据（支持多租户）
+func SimulateTodayData(tenantID string) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
 
-	// 注册事件
+	fmt.Printf("🎯 开始生成今日测试数据 | Tenant: %s...\n", tenantID)
+
+	// 注册事件（45条）
 	for i := 0; i < 45; i++ {
-		SimulateEvent(EventRegistration)
+		SimulateEvent(EventRegistration, tenantID)
 	}
 
-	// 下单事件
+	// 下单事件（68条）
 	for i := 0; i < 68; i++ {
-		SimulateEvent(EventOrder)
+		SimulateEvent(EventOrder, tenantID)
 	}
 
-	// 退单事件
+	// 退单事件（12条）
 	for i := 0; i < 12; i++ {
-		SimulateEvent(EventRefund)
+		SimulateEvent(EventRefund, tenantID)
 	}
 
-	// 充值事件
+	// 充值事件（15条）
 	for i := 0; i < 15; i++ {
-		SimulateEvent(EventRecharge)
+		SimulateEvent(EventRecharge, tenantID)
 	}
 
 	fmt.Println("✅ 今日测试数据生成完成！可刷新前端查看效果")
