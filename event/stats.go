@@ -44,6 +44,29 @@ func ProcessEvent(e Event) {
 		pipe.ZIncrBy(ctx, ns+"reg:source:rank:"+date, 1, source)
 
 	case EventOrder:
+		//{
+		//  "event_type": "order",
+		//  "tenant_id": "TENANT001",
+		//  "data": {
+		//    "order_id": "ORD123",
+		//    "store_id": "STORE001",
+		//    "amount": 599.8,
+		//    "items": [
+		//      {
+		//        "product_id": "P001",
+		//        "product_name": "商品A",
+		//        "quantity": 2,
+		//        "price": 199.9
+		//      },
+		//      {
+		//        "product_id": "P002",
+		//        "product_name": "商品B",
+		//        "quantity": 1,
+		//        "price": 199.9
+		//      }
+		//    ]
+		//  }
+		//}
 		storeID := fmt.Sprintf("%v", e.Data["store_id"])
 		amount := getFloat(e.Data, "amount")
 
@@ -54,6 +77,33 @@ func ProcessEvent(e Event) {
 
 		pipe.IncrByFloat(ctx, ns+"order:total:amount:"+date, amount)
 		pipe.Incr(ctx, ns+"order:total:count:"+date)
+
+		// ==================== 新增：商品销量统计 ====================
+		if items, ok := e.Data["items"].([]interface{}); ok {
+			for _, item := range items {
+				if itemMap, ok := item.(map[string]interface{}); ok {
+					productID := fmt.Sprintf("%v", itemMap["product_id"])
+					quantity := getFloat(itemMap, "quantity") // 支持 int 或 float
+					price := getFloat(itemMap, "price")
+
+					if productID == "" || quantity <= 0 {
+						continue
+					}
+
+					// 1. 商品总销量（数量）
+					pipe.IncrByFloat(ctx, ns+"product:sales:qty:"+date+":"+productID, quantity)
+
+					// 2. 商品总销售额
+					pipe.IncrByFloat(ctx, ns+"product:sales:amount:"+date+":"+productID, quantity*price)
+
+					// 3. 商品销量排行（按数量）
+					pipe.ZIncrBy(ctx, ns+"product:sales:rank:qty:"+date, quantity, productID)
+
+					// 4. 商品销售额排行（按金额）
+					pipe.ZIncrBy(ctx, ns+"product:sales:rank:amount:"+date, quantity*price, productID)
+				}
+			}
+		}
 
 	case EventRefund:
 		storeID := fmt.Sprintf("%v", e.Data["store_id"])

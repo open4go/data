@@ -329,3 +329,43 @@ func GetHourlyRefundRateTrend(ctx context.Context, tenantID string, hours int) m
 
 	return result
 }
+
+// GetProductSalesRank 获取指定日期的商品销量排行榜
+//
+// JSON Sample:
+// [
+//
+//	{"Member": "P001", "Score": 45},     // Score = 销量数量
+//	{"Member": "P005", "Score": 32}
+//
+// ]
+func GetProductSalesRank(ctx context.Context, tenantID, date string, topN int64, byAmount bool) []redis.Z {
+	rdb := db.GetRedisDataHandler(ctx)
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	if date == "" {
+		date = time.Now().Format("20060102")
+	}
+	if topN <= 0 {
+		topN = 10
+	}
+
+	ns := tenantID + ":"
+
+	var key string
+	if byAmount {
+		key = ns + "product:sales:rank:amount:" + date // 按销售额排行
+	} else {
+		key = ns + "product:sales:rank:qty:" + date // 按销量数量排行（默认）
+	}
+
+	result, _ := rdb.ZRevRangeWithScores(ctx, key, 0, topN-1).Result()
+	return result
+}
+
+// GetProductSalesTrend 获取某商品最近 N 天的销量趋势（可选）
+func GetProductSalesTrend(tenantID, productID string, days int) map[string]interface{} {
+	// 可后续实现，这里先留空
+	return map[string]interface{}{"product_id": productID, "data": []float64{}}
+}
