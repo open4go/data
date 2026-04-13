@@ -45,36 +45,38 @@ func GenerateEvent(eventType string, tenantID string) Event {
 
 	case EventOrder:
 		stores := []string{"STORE001", "STORE002", "STORE003", "STORE004", "STORE005"}
-		// 商品库（更丰富）
-		products := []map[string]interface{}{
-			{"product_id": "P001", "product_name": "无线耳机", "price": 199.0},
-			{"product_id": "P002", "product_name": "机械键盘", "price": 399.0},
-			{"product_id": "P003", "product_name": "智能手表", "price": 899.0},
-			{"product_id": "P004", "product_name": "咖啡机", "price": 599.0},
-			{"product_id": "P005", "product_name": "保温杯", "price": 89.0},
-			{"product_id": "P006", "product_name": "笔记本电脑支架", "price": 129.0},
-			{"product_id": "P007", "product_name": "手机壳", "price": 49.0},
-			{"product_id": "P008", "product_name": "充电宝", "price": 159.0},
+
+		products := []struct {
+			ID    string
+			Name  string
+			Price float64
+		}{
+			{"P001", "无线耳机", 199.0},
+			{"P002", "机械键盘", 399.0},
+			{"P003", "智能手表", 899.0},
+			{"P004", "咖啡机", 599.0},
+			{"P005", "保温杯", 89.0},
+			{"P006", "笔记本支架", 129.0},
+			{"P007", "手机壳", 49.0},
+			{"P008", "充电宝", 159.0},
 		}
 
-		// 随机生成 1~4 个商品
 		itemCount := 1 + int(now.UnixNano()%4)
 		items := make([]map[string]interface{}, 0, itemCount)
-
 		totalAmount := 0.0
+
 		for i := 0; i < itemCount; i++ {
 			p := products[int(now.UnixNano())%len(products)]
-			quantity := 1 + int(now.UnixNano()%5) // 1~5件
+			qty := 1 + int(now.UnixNano()%5)
 
 			item := map[string]interface{}{
-				"product_id":   p["product_id"],
-				"product_name": p["product_name"],
-				"quantity":     float64(quantity),
-				"price":        p["price"],
+				"product_id":   p.ID,
+				"product_name": p.Name,
+				"quantity":     float64(qty),
+				"price":        p.Price,
 			}
 			items = append(items, item)
-
-			totalAmount += p["price"].(float64) * float64(quantity)
+			totalAmount += p.Price * float64(qty)
 		}
 
 		return Event{
@@ -85,7 +87,7 @@ func GenerateEvent(eventType string, tenantID string) Event {
 				"order_id": fmt.Sprintf("ORD_%d", now.UnixNano()%1000000),
 				"store_id": stores[now.UnixNano()%int64(len(stores))],
 				"amount":   totalAmount,
-				"items":    items, // 新增商品列表
+				"items":    items,
 			},
 		}
 
