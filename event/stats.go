@@ -3,6 +3,7 @@ package event
 import (
 	"context"
 	"fmt"
+	"github.com/open4go/log"
 	"time"
 
 	"github.com/open4go/data/db"
@@ -81,26 +82,27 @@ func ProcessEvent(e Event) {
 		// ==================== 商品销量统计（优化版） ====================
 		if items, ok := e.Data["items"].([]interface{}); ok {
 			for _, item := range items {
+				log.Log(ctx).WithField("item", item).Debug("current item")
 				itemMap, ok := item.(map[string]interface{})
 				if !ok {
 					continue
 				}
-
+				log.Log(ctx).WithField("itemMap", itemMap).Debug("current itemMap")
 				productID := fmt.Sprintf("%v", itemMap["product_id"])
 				if productID == "" {
 					continue
 				}
-
+				log.Log(ctx).WithField("productID", productID).Debug("current productID")
 				quantity := getFloat(itemMap, "quantity")
 				price := getFloat(itemMap, "price")
-
+				log.Log(ctx).WithField("quantity", quantity).Debug("current quantity")
 				if quantity <= 0 {
 					continue
 				}
 
 				// 使用统一的日期+productID key
 				productKey := date + ":" + productID
-
+				log.Log(ctx).WithField("productKey", quantity).Debug("current productKey")
 				// 商品总销量（数量）
 				pipe.IncrByFloat(ctx, ns+"product:sales:qty:"+productKey, quantity)
 
