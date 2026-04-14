@@ -79,42 +79,66 @@ func ProcessEvent(ctx context.Context, e Event) {
 		pipe.IncrByFloat(ctx, ns+"order:total:amount:"+date, amount)
 		pipe.Incr(ctx, ns+"order:total:count:"+date)
 
-		// ==================== 商品销量统计（优化版） ====================
-		if items, ok := e.Data["items"].([]interface{}); ok {
-			for _, item := range items {
-				log.Log(ctx).WithField("item", item).Debug("current item")
-				itemMap, ok := item.(map[string]interface{})
-				if !ok {
-					continue
+		// ==================== 商品销量统计（最终健壮版） ====================
+		itemsRaw := e.Data["items"]
+		if itemsRaw != nil {
+			log.Log(ctx).WithField("itemsRaw_type", fmt.Sprintf("%T", itemsRaw)).Debug("items raw type")
+
+			// 支持两种常见类型
+			var items []map[string]interface{}
+
+			switch v := itemsRaw.(type) {
+			case []interface{}:
+				log.Log(ctx).Debug("解析为 []interface{}")
+				for _, item := range v {
+					if m, ok := item.(map[string]interface{}); ok {
+						items = append(items, m)
+					}
 				}
-				log.Log(ctx).WithField("itemMap", itemMap).Debug("current itemMap")
-				productID := fmt.Sprintf("%v", itemMap["product_id"])
-				if productID == "" {
-					continue
-				}
-				log.Log(ctx).WithField("productID", productID).Debug("current productID")
-				quantity := getFloat(itemMap, "quantity")
-				price := getFloat(itemMap, "price")
-				log.Log(ctx).WithField("quantity", quantity).Debug("current quantity")
-				if quantity <= 0 {
-					continue
-				}
-
-				// 使用统一的日期+productID key
-				productKey := date + ":" + productID
-				log.Log(ctx).WithField("productKey", quantity).Debug("current productKey")
-				// 商品总销量（数量）
-				pipe.IncrByFloat(ctx, ns+"product:sales:qty:"+productKey, quantity)
-
-				// 商品总销售额
-				pipe.IncrByFloat(ctx, ns+"product:sales:amount:"+productKey, quantity*price)
-
-				// 商品销量排行（按数量）
-				pipe.ZIncrBy(ctx, ns+"product:sales:rank:qty:"+date, quantity, productID)
-
-				// 商品销售额排行（按金额）
-				pipe.ZIncrBy(ctx, ns+"product:sales:rank:amount:"+date, quantity*price, productID)
+			case []map[string]interface{}:
+				log.Log(ctx).Debug("解析为 []map[string]interface{}")
+				items = v
+			default:
+				log.Log(ctx).WithField("type", fmt.Sprintf("%T", itemsRaw)).Warn("items 类型不支持")
 			}
+
+			if len(items) > 0 {
+				log.Log(ctx).WithField("count", len(items)).Debug("成功解析商品列表")
+
+				for _, itemMap := range items {
+					productID := fmt.Sprintf("%v", itemMap["product_id"])
+					if productID == "" {
+						continue
+					}
+
+					quantity := getFloat(itemMap, "quantity")
+					price := getFloat(itemMap, "price")
+
+					log.Log(ctx).WithField("product_id", productID).
+						WithField("quantity", quantity).
+						WithField("price", price).Debug("处理商品")
+
+					if quantity <= 0 {
+						continue
+					}
+
+					productKey := date + ":" + productID
+
+					// 商品总销量（数量）
+					pipe.IncrByFloat(ctx, ns+"product:sales:qty:"+productKey, quantity)
+
+					// 商品总销售额
+					pipe.IncrByFloat(ctx, ns+"product:sales:amount:"+productKey, quantity*price)
+
+					// 商品销量排行（按数量）
+					pipe.ZIncrBy(ctx, ns+"product:sales:rank:qty:"+date, quantity, productID)
+
+					// 商品销售额排行（按金额）
+					pipe.ZIncrBy(ctx, ns+"product:sales:rank:amount:"+date, quantity*price, productID)
+				}
+			}
+		} else {
+			log.Log(ctx).Debug("订单中没有 items 字段")
 		}
 
 	case EventRefund:
