@@ -79,12 +79,11 @@ func ProcessEvent(ctx context.Context, e Event) {
 		pipe.IncrByFloat(ctx, ns+"order:total:amount:"+date, amount)
 		pipe.Incr(ctx, ns+"order:total:count:"+date)
 
-		// ==================== 商品销量统计（最终健壮版） ====================
+		// ==================== 商品销量统计（最终修复版） ====================
 		itemsRaw := e.Data["items"]
 		if itemsRaw != nil {
 			log.Log(ctx).WithField("itemsRaw_type", fmt.Sprintf("%T", itemsRaw)).Debug("items raw type")
 
-			// 支持两种常见类型
 			var items []map[string]interface{}
 
 			switch v := itemsRaw.(type) {
@@ -96,14 +95,15 @@ func ProcessEvent(ctx context.Context, e Event) {
 					}
 				}
 			case []map[string]interface{}:
-				log.Log(ctx).Debug("解析为 []map[string]interface{}")
+				log.Log(ctx).Debug("解析为 []map[string]interface{} ← 当前实际类型")
 				items = v
 			default:
 				log.Log(ctx).WithField("type", fmt.Sprintf("%T", itemsRaw)).Warn("items 类型不支持")
+				return // 或者 continue
 			}
 
 			if len(items) > 0 {
-				log.Log(ctx).WithField("count", len(items)).Debug("成功解析商品列表")
+				log.Log(ctx).WithField("count", len(items)).Info("成功解析商品列表，开始统计")
 
 				for _, itemMap := range items {
 					productID := fmt.Sprintf("%v", itemMap["product_id"])
@@ -140,7 +140,6 @@ func ProcessEvent(ctx context.Context, e Event) {
 		} else {
 			log.Log(ctx).Debug("订单中没有 items 字段")
 		}
-
 	case EventRefund:
 		storeID := fmt.Sprintf("%v", e.Data["store_id"])
 		amount := getFloat(e.Data, "amount")
