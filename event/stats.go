@@ -79,7 +79,7 @@ func ProcessEvent(ctx context.Context, e Event) {
 		pipe.IncrByFloat(ctx, ns+"order:total:amount:"+date, amount)
 		pipe.Incr(ctx, ns+"order:total:count:"+date)
 
-		// ==================== 商品销量统计（最终修复版） ====================
+		// ==================== 商品销量统计（最终稳定版） ====================
 		itemsRaw := e.Data["items"]
 		if itemsRaw != nil {
 			log.Log(ctx).WithField("itemsRaw_type", fmt.Sprintf("%T", itemsRaw)).Debug("items raw type")
@@ -99,15 +99,17 @@ func ProcessEvent(ctx context.Context, e Event) {
 				items = v
 			default:
 				log.Log(ctx).WithField("type", fmt.Sprintf("%T", itemsRaw)).Warn("items 类型不支持")
-				return // 或者 continue
 			}
 
-			if len(items) > 0 {
-				log.Log(ctx).WithField("count", len(items)).Info("成功解析商品列表，开始统计")
+			log.Log(ctx).WithField("items_len", len(items)).Info("解析后的商品数量")
 
-				for _, itemMap := range items {
+			if len(items) > 0 {
+				log.Log(ctx).WithField("count", len(items)).Info("开始处理商品销量统计")
+
+				for idx, itemMap := range items {
 					productID := fmt.Sprintf("%v", itemMap["product_id"])
 					if productID == "" {
+						log.Log(ctx).WithField("index", idx).Warn("商品缺少 product_id")
 						continue
 					}
 
@@ -124,22 +126,18 @@ func ProcessEvent(ctx context.Context, e Event) {
 
 					productKey := date + ":" + productID
 
-					// 商品总销量（数量）
 					pipe.IncrByFloat(ctx, ns+"product:sales:qty:"+productKey, quantity)
-
-					// 商品总销售额
 					pipe.IncrByFloat(ctx, ns+"product:sales:amount:"+productKey, quantity*price)
-
-					// 商品销量排行（按数量）
 					pipe.ZIncrBy(ctx, ns+"product:sales:rank:qty:"+date, quantity, productID)
-
-					// 商品销售额排行（按金额）
 					pipe.ZIncrBy(ctx, ns+"product:sales:rank:amount:"+date, quantity*price, productID)
 				}
+			} else {
+				log.Log(ctx).Warn("解析成功但 items 长度为 0")
 			}
 		} else {
 			log.Log(ctx).Debug("订单中没有 items 字段")
 		}
+
 	case EventRefund:
 		storeID := fmt.Sprintf("%v", e.Data["store_id"])
 		amount := getFloat(e.Data, "amount")
