@@ -2,6 +2,7 @@ package event
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/open4go/log"
 	"time"
@@ -45,29 +46,6 @@ func ProcessEvent(ctx context.Context, e Event) {
 		pipe.ZIncrBy(ctx, ns+"reg:source:rank:"+date, 1, source)
 
 	case EventOrder:
-		//{
-		//  "event_type": "order",
-		//  "tenant_id": "TENANT001",
-		//  "data": {
-		//    "order_id": "ORD123",
-		//    "store_id": "STORE001",
-		//    "amount": 599.8,
-		//    "items": [
-		//      {
-		//        "product_id": "P001",
-		//        "product_name": "商品A",
-		//        "quantity": 2,
-		//        "price": 199.9
-		//      },
-		//      {
-		//        "product_id": "P002",
-		//        "product_name": "商品B",
-		//        "quantity": 1,
-		//        "price": 199.9
-		//      }
-		//    ]
-		//  }
-		//}
 		storeID := fmt.Sprintf("%v", e.Data["store_id"])
 		amount := getFloat(e.Data, "amount")
 
@@ -79,63 +57,63 @@ func ProcessEvent(ctx context.Context, e Event) {
 		pipe.IncrByFloat(ctx, ns+"order:total:amount:"+date, amount)
 		pipe.Incr(ctx, ns+"order:total:count:"+date)
 
-		// ==================== 商品销量统计（最终稳定版） ====================
-		itemsRaw := e.Data["items"]
-		if itemsRaw != nil {
+		// ==================== 商品销量统计（使用结构体版） ====================
+		if itemsRaw, ok := e.Data["items"]; ok {
 			log.Log(ctx).WithField("itemsRaw_type", fmt.Sprintf("%T", itemsRaw)).Debug("items raw type")
 
-			var items []map[string]interface{}
+			var productItems []ProductItem
 
+			// 支持两种常见格式
 			switch v := itemsRaw.(type) {
 			case []interface{}:
 				log.Log(ctx).Debug("解析为 []interface{}")
 				for _, item := range v {
-					if m, ok := item.(map[string]interface{}); ok {
-						items = append(items, m)
+					if data, err := json.Marshal(item); err == nil {
+						var p ProductItem
+						if json.Unmarshal(data, &p) == nil {
+							productItems = append(productItems, p)
+						}
 					}
 				}
 			case []map[string]interface{}:
-				log.Log(ctx).Debug("解析为 []map[string]interface{} ← 当前实际类型")
-				items = v
-			default:
-				log.Log(ctx).WithField("type", fmt.Sprintf("%T", itemsRaw)).Warn("items 类型不支持")
-			}
-
-			log.Log(ctx).WithField("items_len", len(items)).Info("解析后的商品数量")
-
-			if len(items) > 0 {
-				log.Log(ctx).WithField("count", len(items)).Info("开始处理商品销量统计")
-
-				for idx, itemMap := range items {
-					productID := fmt.Sprintf("%v", itemMap["product_id"])
-					if productID == "" {
-						log.Log(ctx).WithField("index", idx).Warn("商品缺少 product_id")
-						continue
+				log.Log(ctx).Debug("解析为 []map[string]interface{}")
+				for _, m := range v {
+					if data, err := json.Marshal(m); err == nil {
+						var p ProductItem
+						if json.Unmarshal(data, &p) == nil {
+							productItems = append(productItems, p)
+						}
 					}
-
-					quantity := getFloat(itemMap, "quantity")
-					price := getFloat(itemMap, "price")
-
-					log.Log(ctx).WithField("product_id", productID).
-						WithField("quantity", quantity).
-						WithField("price", price).Debug("处理商品")
-
-					if quantity <= 0 {
-						continue
-					}
-
-					productKey := date + ":" + productID
-
-					pipe.IncrByFloat(ctx, ns+"product:sales:qty:"+productKey, quantity)
-					pipe.IncrByFloat(ctx, ns+"product:sales:amount:"+productKey, quantity*price)
-					pipe.ZIncrBy(ctx, ns+"product:sales:rank:qty:"+date, quantity, productID)
-					pipe.ZIncrBy(ctx, ns+"product:sales:rank:amount:"+date, quantity*price, productID)
 				}
-			} else {
-				log.Log(ctx).Warn("解析成功但 items 长度为 0")
+			case []ProductItem: // 直接是结构体切片的情况
+				productItems = v
 			}
-		} else {
-			log.Log(ctx).Debug("订单中没有 items 字段")
+
+			log.Log(ctx).WithField("count", len(productItems)).Info("解析后的商品数量")
+
+			for _, item := range productItems {
+				if item.ProductID == "" || item.Quantity <= 0 {
+					continue
+				}
+
+				log.Log(ctx).WithField("product_id", item.ProductID).
+					WithField("quantity", item.Quantity).
+					WithField("product_name", item.ProductName).
+					WithField("price", item.Price).Debug("处理商品")
+				productKey := date + ":" + item.ProductID
+
+				// 商品总销量（数量）
+				pipe.IncrByFloat(ctx, ns+"product:sales:qty:"+productKey, item.Quantity)
+
+				// 商品总销售额
+				pipe.IncrByFloat(ctx, ns+"product:sales:amount:"+productKey, item.Quantity*item.Price)
+
+				// 商品销量排行（按数量）
+				pipe.ZIncrBy(ctx, ns+"product:sales:rank:qty:"+date, item.Quantity, item.ProductID)
+
+				// 商品销售额排行（按金额）
+				pipe.ZIncrBy(ctx, ns+"product:sales:rank:amount:"+date, item.Quantity*item.Price, item.ProductID)
+			}
 		}
 
 	case EventRefund:

@@ -3,12 +3,13 @@ package event
 import (
 	"context"
 	"fmt"
-	"github.com/open4go/log"
 	"time"
+
+	"github.com/open4go/log"
 )
 
 // ====================================
-//          数据模拟生成函数（支持多租户 + 商品信息）
+//          数据模拟生成函数（支持多租户 + 商品结构体）
 // ====================================
 
 // SimulateEvent 生成模拟事件并立即调用 ProcessEvent
@@ -24,7 +25,7 @@ func SimulateEvent(ctx context.Context, eventType string, tenantID string) {
 		eventType, tenantID, event.Timestamp.Format("2006-01-02 15:04:05"))
 }
 
-// GenerateEvent 生成模拟事件数据（新增商品信息）
+// GenerateEvent 生成模拟事件数据（使用结构体生成商品）
 func GenerateEvent(ctx context.Context, eventType string, tenantID string) Event {
 	if tenantID == "" {
 		tenantID = "default"
@@ -48,42 +49,51 @@ func GenerateEvent(ctx context.Context, eventType string, tenantID string) Event
 	case EventOrder:
 		stores := []string{"STORE001", "STORE002", "STORE003", "STORE004", "STORE005"}
 
-		products := []struct {
-			ID    string
-			Name  string
-			Price float64
-		}{
-			{"P001", "无线耳机", 199.0},
-			{"P002", "机械键盘", 399.0},
-			{"P003", "智能手表", 899.0},
-			{"P004", "咖啡机", 599.0},
-			{"P005", "保温杯", 89.0},
-			{"P006", "笔记本支架", 129.0},
-			{"P007", "手机壳", 49.0},
-			{"P008", "充电宝", 159.0},
+		// 商品库（使用结构体）
+		products := []ProductItem{
+			{ProductID: "P001", ProductName: "无线耳机", Price: 199.0},
+			{ProductID: "P002", ProductName: "机械键盘", Price: 399.0},
+			{ProductID: "P003", ProductName: "智能手表", Price: 899.0},
+			{ProductID: "P004", ProductName: "咖啡机", Price: 599.0},
+			{ProductID: "P005", ProductName: "保温杯", Price: 89.0},
+			{ProductID: "P006", ProductName: "笔记本支架", Price: 129.0},
+			{ProductID: "P007", ProductName: "手机壳", Price: 49.0},
+			{ProductID: "P008", ProductName: "充电宝", Price: 159.0},
 		}
 
-		itemCount := 1 + int(now.UnixNano()%4)
-		items := make([]map[string]interface{}, 0, itemCount)
+		itemCount := 1 + int(now.UnixNano()%4) // 随机 1~4 个商品
+		items := make([]ProductItem, 0, itemCount)
 		totalAmount := 0.0
 
 		for i := 0; i < itemCount; i++ {
 			p := products[int(now.UnixNano())%len(products)]
-			qty := 1 + int(now.UnixNano()%5)
+			qty := 1 + int(now.UnixNano()%5) // 数量 1~5
 
-			item := map[string]interface{}{
-				"product_id":   p.ID,
-				"product_name": p.Name,
-				"quantity":     float64(qty),
-				"price":        p.Price,
+			item := ProductItem{
+				ProductID:   p.ProductID,
+				ProductName: p.ProductName,
+				Quantity:    float64(qty),
+				Price:       p.Price,
 			}
-			log.Log(ctx).WithField("item", item).Debug("test data")
+
 			items = append(items, item)
-			log.Log(ctx).WithField("item", item).Debug("fake new item")
 			totalAmount += p.Price * float64(qty)
+
+			log.Log(ctx).WithField("product_id", item.ProductID).
+				WithField("quantity", item.Quantity).
+				WithField("product_name", item.ProductName).
+				WithField("price", item.Price).Debug("生成商品项")
+
 		}
 
-		log.Log(ctx).WithField("items", items).Debug("fake new items")
+		log.Log(ctx).WithField("item_count", len(items)).WithField("total_amount", totalAmount).Debug("生成订单完成")
+
+		// 将 []ProductItem 转为 []interface{}，以兼容 ProcessEvent 中的 map 处理
+		itemsInterface := make([]interface{}, len(items))
+		for i, item := range items {
+			itemsInterface[i] = item
+		}
+
 		return Event{
 			EventType: EventOrder,
 			TenantID:  tenantID,
@@ -92,7 +102,7 @@ func GenerateEvent(ctx context.Context, eventType string, tenantID string) Event
 				"order_id": fmt.Sprintf("ORD_%d", now.UnixNano()%1000000),
 				"store_id": stores[now.UnixNano()%int64(len(stores))],
 				"amount":   totalAmount,
-				"items":    items,
+				"items":    itemsInterface, // 转为 interface{} 兼容现有逻辑
 			},
 		}
 
@@ -141,7 +151,7 @@ func GenerateEvent(ctx context.Context, eventType string, tenantID string) Event
 	}
 }
 
-// SimulateBatch 批量模拟（保持不变）
+// SimulateBatch 批量模拟
 func SimulateBatch(ctx context.Context, count int, tenantID string) {
 	if tenantID == "" {
 		tenantID = "default"
@@ -173,7 +183,7 @@ func SimulateBatch(ctx context.Context, count int, tenantID string) {
 	fmt.Println("✅ 批量模拟完成！")
 }
 
-// SimulateTodayData 快速生成今日测试数据（订单会包含丰富商品信息）
+// SimulateTodayData 快速生成今日测试数据
 func SimulateTodayData(ctx context.Context, tenantID string) {
 	if tenantID == "" {
 		tenantID = "default"
@@ -186,8 +196,8 @@ func SimulateTodayData(ctx context.Context, tenantID string) {
 		SimulateEvent(ctx, EventRegistration, tenantID)
 	}
 
-	// 下单事件（重点！每个订单都会带商品信息）
-	for i := 0; i < 80; i++ { // 增加到80条，让商品数据更丰富
+	// 下单事件（重点，每个订单都包含商品）
+	for i := 0; i < 80; i++ {
 		SimulateEvent(ctx, EventOrder, tenantID)
 	}
 
