@@ -123,8 +123,8 @@ func GetRefundByStore(ctx context.Context, tenantID, date string, topN int64) []
 
 func calculateRefundRate(totalAmountStr, refundAmountStr string) float64 {
 	var total, refund float64
-	fmt.Sscanf(totalAmountStr, "%f", &total)
-	fmt.Sscanf(refundAmountStr, "%f", &refund)
+	_, _ = fmt.Sscanf(totalAmountStr, "%f", &total)
+	_, _ = fmt.Sscanf(refundAmountStr, "%f", &refund)
 	if total == 0 {
 		return 0
 	}

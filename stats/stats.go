@@ -6,6 +6,7 @@ import (
 	// ... 原有 import
 )
 
+//nolint:unused // promauto 在包初始化时把这些指标注册到默认 Prometheus registry，保留以免改变已暴露的指标
 var (
 	// 注册相关
 	regTotal = promauto.NewCounterVec(prometheus.CounterOpts{
