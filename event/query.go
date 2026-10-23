@@ -25,6 +25,9 @@ func GetDashboardMetrics(ctx context.Context, tenantID string) map[string]interf
 // GetMetricsByDate 获取指定日期的统计指标
 func GetMetricsByDate(ctx context.Context, tenantID, date string) map[string]interface{} {
 	rdb := db.GetRedisDataHandler(ctx)
+	if rdb == nil {
+		return map[string]interface{}{}
+	}
 	if tenantID == "" {
 		tenantID = "default"
 	}
@@ -60,6 +63,9 @@ func GetMetricsByDate(ctx context.Context, tenantID, date string) map[string]int
 // GetRegistrationSources 支持 tenant
 func GetRegistrationSources(ctx context.Context, tenantID, date string) []redis.Z {
 	rdb := db.GetRedisDataHandler(ctx)
+	if rdb == nil {
+		return nil
+	}
 	if tenantID == "" {
 		tenantID = "default"
 	}
@@ -74,6 +80,9 @@ func GetRegistrationSources(ctx context.Context, tenantID, date string) []redis.
 // GetOrderByStore 支持 tenant
 func GetOrderByStore(ctx context.Context, tenantID, date string, topN int64) []redis.Z {
 	rdb := db.GetRedisDataHandler(ctx)
+	if rdb == nil {
+		return nil
+	}
 	if tenantID == "" {
 		tenantID = "default"
 	}
@@ -91,6 +100,9 @@ func GetOrderByStore(ctx context.Context, tenantID, date string, topN int64) []r
 // GetRefundRateWithTenant 支持多租户的退单率
 func GetRefundRateWithTenant(ctx context.Context, tenantID string) float64 {
 	rdb := db.GetRedisDataHandler(ctx)
+	if rdb == nil {
+		return 0
+	}
 
 	if tenantID == "" {
 		tenantID = "default"
@@ -107,6 +119,9 @@ func GetRefundRateWithTenant(ctx context.Context, tenantID string) float64 {
 // GetRefundByStore 支持 tenant
 func GetRefundByStore(ctx context.Context, tenantID, date string, topN int64) []redis.Z {
 	rdb := db.GetRedisDataHandler(ctx)
+	if rdb == nil {
+		return nil
+	}
 	if tenantID == "" {
 		tenantID = "default"
 	}
@@ -149,6 +164,9 @@ func calculateRefundRate(totalAmountStr, refundAmountStr string) float64 {
 //	}
 func GetTrendMetrics(ctx context.Context, tenantID string, days int) map[string]interface{} {
 	rdb := db.GetRedisDataHandler(ctx)
+	if rdb == nil {
+		return map[string]interface{}{}
+	}
 
 	if tenantID == "" {
 		tenantID = "default"
@@ -217,6 +235,9 @@ func GetTrendMetrics(ctx context.Context, tenantID string, days int) map[string]
 //	}
 func GetWeeklySummary(ctx context.Context, tenantID string) map[string]interface{} {
 	rdb := db.GetRedisDataHandler(ctx)
+	if rdb == nil {
+		return map[string]interface{}{}
+	}
 	if tenantID == "" {
 		tenantID = "default"
 	}
@@ -283,6 +304,9 @@ func GetWeeklySummary(ctx context.Context, tenantID string) map[string]interface
 //	}
 func GetHourlyRefundRateTrend(ctx context.Context, tenantID string, hours int) map[string]interface{} {
 	rdb := db.GetRedisDataHandler(ctx)
+	if rdb == nil {
+		return map[string]interface{}{}
+	}
 	if tenantID == "" {
 		tenantID = "default"
 	}
@@ -341,6 +365,9 @@ func GetHourlyRefundRateTrend(ctx context.Context, tenantID string, hours int) m
 // ]
 func GetProductSalesRank(ctx context.Context, tenantID, date string, topN int64, byAmount bool) []redis.Z {
 	rdb := db.GetRedisDataHandler(ctx)
+	if rdb == nil {
+		return nil
+	}
 	if tenantID == "" {
 		tenantID = "default"
 	}
