@@ -15,6 +15,9 @@ import (
 // 注意：每小时趋势数据不需要在这里更新，趋势图通过独立 API 从 Redis 读取
 func updatePrometheusMetrics(ctx context.Context, e Event) {
 	rds := db.GetRedisDataHandler(ctx)
+	if rds == nil {
+		return
+	}
 
 	if e.TenantID == "" {
 		e.TenantID = "default"

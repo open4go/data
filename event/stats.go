@@ -34,6 +34,9 @@ func ProcessEvent(ctx context.Context, e Event) {
 	ns := e.TenantID + ":" // namespace 前缀
 
 	rds := db.GetRedisDataHandler(ctx)
+	if rds == nil {
+		return
+	}
 	pipe := rds.Pipeline()
 
 	switch e.EventType {
